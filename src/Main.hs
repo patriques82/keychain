@@ -20,13 +20,15 @@ import           System.Hclip               (setClipboard)
 -- Types
 
 type Error = String
+type EncryptedFilePath = FilePath
+type PasswordFilePath = FilePath
 
 newtype App a = App {
   runApp :: ExceptT Error IO a  -- IO (Either Error a)
 } deriving (Functor, Applicative, Monad, MonadIO)
 
-data Command = SetupFile String String -- | encrypted file, raw passwords file (TODO optional?)
-             | Setup String            -- | encrypted file
+data Command = SetupOrigin EncryptedFilePath PasswordFilePath
+             | SetupRemote EncryptedFilePath
              | Add String String
              | Key String
              | Encrypt
@@ -37,7 +39,7 @@ data Command = SetupFile String String -- | encrypted file, raw passwords file 
 
 -- TODO: replace with (FilePath -> Text -> IO ())
 data Config = Config {
-  filePath :: FilePath , -- | ~/.lockfile
+  filePath :: FilePath , -- | $HOME/.lockfile
   contents :: String
 }
 
@@ -51,25 +53,28 @@ main :: IO ()
 main = getArgs >>= exec . parse
 
 parse :: [String] -> Command
-parse ["-c", encrypted, "-p", passwords] = SetupFile encrypted passwords
-parse ["-c", encrypted]                  = Setup encrypted
-parse ["-a", site, key]                  = Add site key
-parse ["-k", site]                       = Key site
-parse ["encrypt"]                        = Encrypt
-parse ["-l"]                             = List
-parse ["-h"]                             = Help
-parse _                                  = Usage
+parse ["setup", encrypted, "-p", passwords] = SetupOrigin encrypted passwords
+parse ["setup", encrypted]                  = SetupRemote encrypted
+parse ["add", site, key]                    = Add site key
+parse ["key", site]                         = Key site
+parse ["encrypt"]                           = Encrypt
+parse ["list"]                              = List
+parse ["-h"]                                = Help
+parse _                                     = Usage
 
 exec :: Command -> IO ()
-exec (SetupFile f p) = setup $ Config <$> configurationFile <*> configContents f p
-exec (Setup f) = setup $ Config <$> configurationFile <*> exist f
-exec (Add s k) = getPassword >>= add s k
-exec (Key s) = getPassword >>= key s
-exec Encrypt = getPassword >>= encrypt
-exec List = undefined -- getEncryptionFile >>= list
+exec (SetupOrigin f p) = setup f p
+exec (SetupRemote f)   = undefined
+exec (Add s k)         = getPassword >>= add s k
+exec (Key s)           = getPassword >>= key s
+exec Encrypt           = getPassword >>= encrypt
+exec List              = undefined
+exec Help              = undefined
+exec Usage             = undefined
 
-setup :: App Config -> IO ()
-setup conf = run conf $ \(Config f c) -> writeFile f c
+setup :: FilePath -> FilePath -> IO ()
+setup f p = run (config f p) writeConfig
+  where writeConfig (Config f c) = writeFile f c
 
 add :: String -> String -> String -> IO ()
 add site key password = run (insert site key password) return
@@ -85,6 +90,9 @@ run app f = (runExceptT . runApp $ app) >>= either putStrLn f
 
 -- Primitives
 
+config :: FilePath -> String -> App Config
+config f p = Config <$> configurationFile <*> configContents f p
+
 extract :: String -> String -> App String
 extract site password = do
   f <- encryptedFile
@@ -99,8 +107,7 @@ insert site key password = do
 
 encrypt' :: String -> App ()
 encrypt' password = do
-  ps' <- configFilePaths
-  let ps = trace "hhh" ps'
+  ps <- configFilePaths
   case ps of
     (e:p:_) -> do
       f <- liftIO $ BS.readFile p
@@ -129,7 +136,9 @@ decryptFile p f = do
   return $ decodeUtf8 f'
 
 configurationFile :: App String
-configurationFile = flip (</>) ".lockfile" <$> liftIO getHomeDirectory
+configurationFile = do
+  cf <- flip (</>) ".lockfile" <$> liftIO getHomeDirectory
+  exist cf
 
 configContents :: FilePath -> FilePath -> App String
 configContents f p = do
