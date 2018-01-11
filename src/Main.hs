@@ -1,17 +1,17 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
 
 module Main where
 
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
-import           Control.Monad.Trans.Except (ExceptT, throwE, runExceptT)
+import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import qualified Crypto.Simple.CBC          as CBC (decrypt, encrypt)
-import qualified Data.ByteString            as BS (ByteString, readFile, writeFile)
+import qualified Data.ByteString            as BS (ByteString, readFile,
+                                                   writeFile)
 import           Data.ByteString.Char8      (pack, unpack)
 import           Data.Text                  (Text)
 import           Data.Text.Encoding         (decodeUtf8)
 import qualified Data.Text.IO               as TIO (putStrLn)
-import           Debug.Trace                (trace) -- TODO remove
+import           Debug.Trace                (trace)
 import           System.Directory           (doesFileExist, getHomeDirectory)
 import           System.Environment         (getArgs)
 import           System.FilePath.Posix      ((</>))
@@ -22,6 +22,9 @@ import           System.Hclip               (setClipboard)
 type Error = String
 type EncryptedFilePath = FilePath
 type PasswordFilePath = FilePath
+type Password = String
+type Site = String
+type Key = String
 
 newtype App a = App {
   runApp :: ExceptT Error IO a  -- IO (Either Error a)
@@ -37,15 +40,8 @@ data Command = SetupOrigin EncryptedFilePath PasswordFilePath
              | Help
   deriving (Eq, Show)
 
--- TODO: replace with (FilePath -> Text -> IO ())
-data Config = Config {
-  filePath :: FilePath , -- | $HOME/.lockfile
-  contents :: String
-}
-
--- Globals
-
 delim = ':'
+lockfile = ".lockfile"
 
 -- Main
 
@@ -63,60 +59,54 @@ parse ["-h"]                                = Help
 parse _                                     = Usage
 
 exec :: Command -> IO ()
-exec (SetupOrigin f p) = setup f p
+exec (SetupOrigin e p) = run (setupOrigin e p)
 exec (SetupRemote f)   = undefined
-exec (Add s k)         = getPassword >>= add s k
-exec (Key s)           = getPassword >>= key s
-exec Encrypt           = getPassword >>= encrypt
+exec (Add s k)         = getPassword >>= run . add s k
+exec (Key s)           = getPassword >>= run . key s
+exec Encrypt           = getPassword >>= run . encrypt
 exec List              = undefined
 exec Help              = undefined
 exec Usage             = undefined
 
-setup :: FilePath -> FilePath -> IO ()
-setup f p = run (config f p) writeConfig
-  where writeConfig (Config f c) = writeFile f c
+run :: App () -> IO ()
+run app = (runExceptT . runApp $ app) >>= either putStrLn return
 
-add :: String -> String -> String -> IO ()
-add site key password = run (insert site key password) return
+-- command semantics
 
-key :: String -> String -> IO ()
-key site password = run (extract site password) setClipboard
+setupOrigin :: FilePath -> Password -> App ()
+setupOrigin encrypted password = do
+  f <- configurationFile
+  c <- encrypted +++ password
+  liftIO $ writeFile f c
 
-encrypt :: String -> IO ()
-encrypt password = run (encrypt' password) return
-
-run :: App a -> (a -> IO ()) -> IO ()
-run app f = (runExceptT . runApp $ app) >>= either putStrLn f
-
--- Primitives
-
-config :: FilePath -> String -> App Config
-config f p = Config <$> configurationFile <*> configContents f p
-
-extract :: String -> String -> App String
-extract site password = do
+-- TODO: incomplete
+key :: Site -> Password -> App ()
+key s p = do
   f <- encryptedFile
-  f' <- liftIO $ CBC.decrypt (pack password) f
-  return (unpack f')
+  f' <- liftIO $ CBC.decrypt (pack p) f
+  liftIO $ setClipboard (unpack f')
 
-insert :: String -> String -> String -> App ()
-insert site key password = do
+-- TODO: incomplete
+add :: Site -> Key -> Password -> App ()
+add s k p = do
   f <- encryptedFile
-  f' <- decryptFile password f
+  f' <- decryptFile p f
   liftIO $ TIO.putStrLn f'
 
-encrypt' :: String -> App ()
-encrypt' password = do
+encrypt :: Password -> App ()
+encrypt password = do
   ps <- configFilePaths
   case ps of
-    (e:p:_) -> do
-      f <- liftIO $ BS.readFile p
-      f' <- liftIO $ CBC.encrypt (pack password) f
-      liftIO $ BS.writeFile e f'
+    (e:p:_) -> liftIO $ do
+      f <- BS.readFile p
+      f' <- CBC.encrypt (pack password) f
+      BS.writeFile e f'
     otherwise -> throw "Incomplete config for encryption: need a password file"
 
+-- Helpers
+
 checkFormat :: BS.ByteString -> App BS.ByteString
-checkFormat cs = undefined
+checkFormat bs = undefined
 
 encryptedFile :: App BS.ByteString
 encryptedFile = configFilePaths >>= liftIO . BS.readFile . head
@@ -135,13 +125,13 @@ decryptFile p f = do
   f' <- liftIO $ CBC.decrypt p' f
   return $ decodeUtf8 f'
 
-configurationFile :: App String
+configurationFile :: App FilePath
 configurationFile = do
-  cf <- flip (</>) ".lockfile" <$> liftIO getHomeDirectory
+  cf <- flip (</>) lockfile <$> liftIO getHomeDirectory
   exist cf
 
-configContents :: FilePath -> FilePath -> App String
-configContents f p = do
+(+++) :: FilePath -> FilePath -> App String
+(+++) f p = do
   f' <- exist f
   p' <- exist p
   return $ f' ++ (delim:p')
@@ -155,8 +145,6 @@ exist path = do
 
 throw :: Error -> App a
 throw s = App $ throwE s
-
--- Helpers
 
 -- appends 0:s until 17 characters have been reached
 getPassword :: IO String
