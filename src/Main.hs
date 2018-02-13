@@ -9,15 +9,14 @@ import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import qualified Crypto.Simple.CBC          as CBC (decrypt, encrypt)
 import qualified Data.ByteString            as BS (ByteString, readFile, writeFile)
-import           Data.ByteString.Char8      (pack, unpack)
+import           Data.ByteString.Char8      (pack)
 import qualified Data.Text                  as T (Text, pack)
-import           Data.Text.Encoding         (decodeUtf8)
---import qualified Data.Text.IO               as TIO (putStrLn)
-import           System.IO                  (hFlush, hGetEcho, hSetEcho, stdout, stdin)
+-- import qualified Data.Text.IO               as TIO (putStrLn)
+import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
 import           System.Directory           (doesFileExist, doesDirectoryExist, getHomeDirectory, setPermissions)
 import           System.Environment         (getArgs)
 import           System.FilePath.Posix      ((</>))
-import           System.Hclip               (setClipboard)
+-- import           System.Hclip               (setClipboard)
 import           Data.Traversable           (for)
 import qualified Data.Yaml                  as Y
 import qualified Data.HashMap.Strict        as HM (toList, lookup)
@@ -37,15 +36,14 @@ data SiteDetails = SiteDetails {
   user :: Maybe T.Text
 } deriving (Eq, Show)
 
+-- |IO with error checking
 newtype IOException a = IOException {
-  runIOException :: ExceptT Error IO a  -- IO (Either Error a)
+  runIOException :: ExceptT Error IO a
 } deriving (Functor, Applicative, Monad, MonadIO)
 
-newtype App a b = App {
-  runApp :: a -> IOException b
+newtype PasswordApp = App {
+  runApp :: Password -> IOException ()
 }
-
-type PasswordApp = App Password ()
 
 main :: IO ()
 main = getArgs >>= exec
@@ -66,43 +64,26 @@ run app = getPassword >>= runWithPassword >>= either putStrLn return
 -- and encrypts password file and stores path to encrypted file in lockfile (config).
 setupOrigin :: EncryptedFilePath -> PasswordFilePath -> PasswordApp
 setupOrigin encryptedPath passwordPath = App $ \p -> do
-  encryptedPath' <- writable encryptedPath
-  passwordPath' <- exist passwordPath
-  encrypted <- liftIO $ encrypt passwordPath' p
-  liftIO $ BS.writeFile encryptedPath' encrypted
+  encrypted <- encrypt passwordPath p
+  write encryptedPath encrypted
   c <- configPath
-  liftIO $ writeFile c encryptedPath'
+  write c (pack encryptedPath)
 
+-- |Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
 setupRemote :: EncryptedFilePath -> IOException ()
 setupRemote encryptedPath = do
-  encryptedPath' <- exist encryptedPath
+  assertExist encryptedPath
   c <- configPath
-  liftIO $ writeFile c encryptedPath'
+  write c (pack encryptedPath)
 
 -- |Takes sitename and adds the key for that site to the clipboard.
 key :: Site -> PasswordApp
-key s = App $ \p -> do
-  f <- encryptedFile
-  f' <- decrypt f p
-  case parse f' of
-    Nothing -> throw "Something went wrong with parsing"
-    Just xs -> liftIO $ print (findKey s xs) -- Maybe Text
-  -- liftIO $ setClipboard (unpack f')
+key s = mkPasswordApp $ \xs -> print (findKey s xs)
+  -- TODO: setClipboard (unpack f')
 
--- |List all site names available.
+-- |Lists name of all site details in encrypted file
 list :: PasswordApp
-list = App $ \p -> do
-  f <- encryptedFile
-  f' <- decrypt f p
-  case parse f' of
-    Nothing -> throw "Something went wrong with parsing"
-    Just xs -> liftIO $ forM_ xs (print . siteKey) 
-
-encrypt :: FilePath -> Password -> IO BS.ByteString
-encrypt f password = BS.readFile f >>= CBC.encrypt (pack password)
-
-decrypt :: BS.ByteString -> Password -> IOException BS.ByteString
-decrypt f p = liftIO $ CBC.decrypt (pack p) f
+list = mkPasswordApp $ \xs -> forM_ xs (print . siteKey)
 
 -- Parsing
 
@@ -118,36 +99,58 @@ parseSiteDetails =
 
 -- IOExeptions
 
-encryptedFile :: IOException BS.ByteString
-encryptedFile = configFilePaths >>= liftIO . BS.readFile
+mkPasswordApp :: ([SiteDetails] -> IO ()) -> PasswordApp 
+mkPasswordApp f = App $ \p -> do
+  e <- encryptedFilePath
+  c <- decrypt e p
+  case parse c of
+    Nothing -> throw "Something went wrong with parsing"
+    Just xs -> liftIO (f xs)
 
-configFilePaths :: IOException FilePath
-configFilePaths = do
-  cf <- configPath >>= exist
-  s <- liftIO $ readFile cf
+encrypt :: FilePath -> Password -> IOException BS.ByteString
+encrypt f p = do
+  assertExist f
+  liftIO $ BS.readFile f >>= CBC.encrypt (pack p)
+
+decrypt :: FilePath -> Password -> IOException BS.ByteString
+decrypt f p = do
+  assertExist f
+  liftIO $ BS.readFile f >>= CBC.decrypt (pack p)
+
+write :: FilePath -> BS.ByteString -> IOException ()
+write f c = do
+  assertWritable f
+  liftIO $ BS.writeFile f c
+
+encryptedFilePath :: IOException FilePath
+encryptedFilePath = do
+  c <- configPath
+  s <- liftIO $ readFile c
   if s /= ""
-    then exist s
+    then do
+      assertExist s
+      return s
     else throw "Empty config"
 
 configPath :: IOException FilePath
 configPath = flip (</>) ".lockfile" <$> liftIO getHomeDirectory
 
-writable :: FilePath -> IOException FilePath
-writable path = 
+assertWritable :: FilePath -> IOException ()
+assertWritable path = 
   if dir == path
     then throw "Filepath is a directory"
     else do
       exists <- liftIO $ doesDirectoryExist dir
       if exists 
-        then return path
+        then return ()
         else throw $ "Directory " ++ dir ++ " does not exist"
     where dir = directory path
 
-exist :: FilePath -> IOException FilePath
-exist path = do
+assertExist :: FilePath -> IOException ()
+assertExist path = do
   exists <- liftIO $ doesFileExist path
   if exists
-    then return path
+    then return ()
     else throw $ "File " ++ path ++ " does not exist"
 
 throw :: Error -> IOException a
