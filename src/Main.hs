@@ -46,13 +46,13 @@ newtype PasswordApp = App {
 }
 
 main :: IO ()
-main = getArgs >>= exec
+main = getArgs >>= run . exec
 
-exec :: [String] -> IO ()
-exec ["setup", e, "-p", p] = run $ setupOrigin e p
+exec :: [String] -> PasswordApp
+exec ["setup", e, "-p", p] = setupOrigin e p
 exec ["setup", e]          = undefined  -- run $ setupRemote e
-exec ["key", s]            = run $ key s
-exec ["list"]              = run list
+exec ["key", s]            = key s
+exec ["list"]              = list
 exec ["-h"]                = undefined
 exec _                     = undefined
 
@@ -87,11 +87,11 @@ list = mkPasswordApp $ \xs -> forM_ xs (print . siteKey)
 
 -- Parsing
 
-parse :: BS.ByteString -> Maybe [SiteDetails]
-parse bs = Y.decode bs >>= Y.parseMaybe parseSiteDetails
+parseSiteDetails :: BS.ByteString -> Maybe [SiteDetails]
+parseSiteDetails bs = Y.decode bs >>= Y.parseMaybe siteDetailsParser
 
-parseSiteDetails :: Y.Value -> Y.Parser [SiteDetails]
-parseSiteDetails =
+siteDetailsParser :: Y.Value -> Y.Parser [SiteDetails]
+siteDetailsParser =
   Y.withObject "details" $ \o ->
     for (HM.toList o) $ \(siteName, details) -> do
       details' <- Y.parseJSON details
@@ -103,7 +103,7 @@ mkPasswordApp :: ([SiteDetails] -> IO ()) -> PasswordApp
 mkPasswordApp f = App $ \p -> do
   e <- encryptedFilePath
   c <- decrypt e p
-  case parse c of
+  case parseSiteDetails c of
     Nothing -> throw "Something went wrong with parsing"
     Just xs -> liftIO (f xs)
 
