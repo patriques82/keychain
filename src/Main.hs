@@ -3,20 +3,21 @@
 module Main where
 
 import           Data.List                  (find, intercalate, init)
+import           Data.Maybe                 (catMaybes)
 import           Control.Exception          (bracket_)
-import           Control.Monad              (forM_)
+import           Control.Monad              (mapM_)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import qualified Crypto.Simple.CBC          as CBC (decrypt, encrypt)
 import qualified Data.ByteString            as BS (ByteString, readFile, writeFile)
 import           Data.ByteString.Char8      (pack)
-import qualified Data.Text                  as T (Text, pack)
--- import qualified Data.Text.IO               as TIO (putStrLn)
+import qualified Data.Text                  as T (Text, pack, unpack)
+import qualified Data.Text.IO               as TIO (putStrLn)
 import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
-import           System.Directory           (doesFileExist, doesDirectoryExist, getHomeDirectory, setPermissions)
+import           System.Directory           (doesFileExist, doesDirectoryExist, getHomeDirectory)
 import           System.Environment         (getArgs)
 import           System.FilePath.Posix      ((</>))
--- import           System.Hclip               (setClipboard)
+import           System.Hclip               (setClipboard)
 import           Data.Traversable           (for)
 import qualified Data.Yaml                  as Y
 import qualified Data.HashMap.Strict        as HM (toList, lookup)
@@ -36,7 +37,7 @@ data SiteDetails = SiteDetails {
   user :: Maybe T.Text
 } deriving (Eq, Show)
 
--- |IO with error checking
+-- | IO with error checking
 newtype IOException a = IOException {
   runIOException :: ExceptT Error IO a
 } deriving (Functor, Applicative, Monad, MonadIO)
@@ -46,21 +47,21 @@ newtype PasswordApp = App {
 }
 
 main :: IO ()
-main = getArgs >>= run . exec
+main = getArgs >>= run . parse
 
-exec :: [String] -> PasswordApp
-exec ["setup", e, "-p", p] = setupOrigin e p
-exec ["setup", e]          = undefined  -- run $ setupRemote e
-exec ["key", s]            = key s
-exec ["list"]              = list
-exec ["-h"]                = undefined
-exec _                     = undefined
+parse :: [String] -> PasswordApp
+parse ["setup", e, "-p", p] = setupOrigin e p
+parse ["setup", e]          = setupRemote e
+parse ["key", s]            = key s
+parse ["list"]              = list
+parse ["-h"]                = undefined
+parse _                     = undefined
 
 run :: PasswordApp -> IO ()
 run app = getPassword >>= runWithPassword >>= either putStrLn return
   where runWithPassword = runExceptT . runIOException . runApp app
 
--- |Takes filepath to location of where to store encrypted file, existing unencrypted password file
+-- | Takes filepath to location of where to store encrypted file, existing unencrypted password file
 -- and encrypts password file and stores path to encrypted file in lockfile (config).
 setupOrigin :: EncryptedFilePath -> PasswordFilePath -> PasswordApp
 setupOrigin encryptedPath passwordPath = App $ \p -> do
@@ -69,21 +70,27 @@ setupOrigin encryptedPath passwordPath = App $ \p -> do
   c <- configPath
   write c (pack encryptedPath)
 
--- |Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
-setupRemote :: EncryptedFilePath -> IOException ()
-setupRemote encryptedPath = do
+-- | Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
+setupRemote :: EncryptedFilePath -> PasswordApp
+setupRemote encryptedPath = App $ \p -> do
   assertExist encryptedPath
-  c <- configPath
-  write c (pack encryptedPath)
+  s <- decrypt encryptedPath p 
+  case parseSiteDetails s of
+    Nothing -> throw "Incorrect password"
+    _ -> do 
+      c <- configPath
+      write c (pack encryptedPath)
 
--- |Takes sitename and adds the key for that site to the clipboard.
+-- | Takes sitename and adds the key for that site to the clipboard.
 key :: Site -> PasswordApp
-key s = mkPasswordApp $ \xs -> print (findKey s xs)
-  -- TODO: setClipboard (unpack f')
+key s = mkPasswordApp $ \xs -> 
+  case findKey s xs of
+    Nothing -> putStrLn "Key not found"
+    Just k -> setClipboard (T.unpack k) 
 
--- |Lists name of all site details in encrypted file
+-- | Lists name of all site details in encrypted file
 list :: PasswordApp
-list = mkPasswordApp $ \xs -> forM_ xs (print . siteKey)
+list = mkPasswordApp $ mapM_ TIO.putStrLn . catMaybes . map siteKey
 
 -- Parsing
 
@@ -125,12 +132,10 @@ write f c = do
 encryptedFilePath :: IOException FilePath
 encryptedFilePath = do
   c <- configPath
-  s <- liftIO $ readFile c
-  if s /= ""
-    then do
-      assertExist s
-      return s
-    else throw "Empty config"
+  e <- liftIO $ readFile c
+  case lines e of
+    (e':[]) -> assertExist e' >> return e'
+    _ -> throw "Empty config"
 
 configPath :: IOException FilePath
 configPath = flip (</>) ".lockfile" <$> liftIO getHomeDirectory
@@ -151,7 +156,7 @@ assertExist path = do
   exists <- liftIO $ doesFileExist path
   if exists
     then return ()
-    else throw $ "File " ++ path ++ " does not exist"
+    else throw ("File " ++ path ++ " does not exist")
 
 throw :: Error -> IOException a
 throw s = IOException $ throwE s
