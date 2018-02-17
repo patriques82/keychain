@@ -1,4 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
@@ -19,8 +21,9 @@ import           System.Environment         (getArgs)
 import           System.FilePath.Posix      ((</>))
 import           System.Hclip               (setClipboard)
 import           Data.Traversable           (for)
-import qualified Data.Yaml                  as Y (Value, Parser, decode, parseMaybe, withObject, parseJSON)
-import qualified Data.HashMap.Strict        as HM (toList, lookup)
+import           Data.Yaml                  ((.=))
+import qualified Data.Yaml                  as Y --(Value, Parser, decode, parseMaybe, withObject, parseJSON)
+import qualified Data.HashMap.Strict        as HM (HashMap, toList, lookup)
 
 type Error = String
 type EncryptedFilePath = FilePath
@@ -35,6 +38,12 @@ data SiteDetails = SiteDetails {
   key :: Maybe T.Text,
   user :: Maybe T.Text
 } deriving (Eq, Show)
+
+instance Y.ToJSON SiteDetails where
+  toJSON SiteDetails{..} = Y.object [
+    "name" .= name,
+    "key"  .= key,
+    "user" .= user ]
 
 newtype App a = App {
   runApp :: ReaderT Password (ExceptT Error IO) a
@@ -51,6 +60,7 @@ parse ["setup", e]          = setupRemote e
 parse ["user", s]           = siteUser s
 parse ["key", s]            = siteKey s
 parse ["list"]              = list
+parse ["sync", p]           = sync p
 parse ["-h"]                = undefined
 parse _                     = undefined
 
@@ -71,42 +81,42 @@ setupOrigin encryptedPath passwordPath = do
 
 -- | Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
 setupRemote :: EncryptedFilePath -> PasswordApp
-setupRemote encryptedPath = do
-  assertExist encryptedPath
-  s <- decrypt encryptedPath
-  case parseSiteDetails s of
-    Nothing -> throw "Incorrect password"
-    _ -> do 
-      c <- configPath
-      write c (pack encryptedPath)
+setupRemote e = passwordApp $ \_ -> do
+  c <- configPath
+  write c (pack e)
 
 -- | Adds the key for given site to the clipboard.
 siteKey :: Site -> PasswordApp
-siteKey s = mkApp $ \xs -> 
+siteKey s = passwordApp $ \xs -> 
   case findKey s xs of
-    Nothing -> putStrLn $ "Site " ++ s ++ " not found"
-    Just k -> setClipboard (T.unpack k) 
+    Nothing -> liftIO $ putStrLn $ "Site " ++ s ++ " not found"
+    Just k -> liftIO $ setClipboard (T.unpack k) 
 
 -- | Adds the siteUser for given site to the clipboard.
 siteUser :: Site -> PasswordApp
-siteUser s = mkApp $ \xs -> 
+siteUser s = passwordApp $ \xs -> 
   case findUser s xs of
-    Nothing -> putStrLn $ "Site " ++ s ++ " not found"
-    Just u -> setClipboard (T.unpack u) 
+    Nothing -> liftIO $ putStrLn $ "Site " ++ s ++ " not found"
+    Just u -> liftIO $ setClipboard (T.unpack u) 
 
 -- | Lists name of all site details in encrypted file
 list :: PasswordApp
-list = mkApp $ mapM_ (TIO.putStrLn . name)
+list = passwordApp $ liftIO . mapM_ (TIO.putStrLn . name)
+
+sync :: PasswordFilePath -> PasswordApp
+sync p = passwordApp $ \xs ->
+  --assertWritable p
+  liftIO $ putStrLn $ show $ Y.toJSON xs 
 
 -- App Combinators
 
-mkApp :: ([SiteDetails] -> IO ()) -> App ()
-mkApp f = do
+passwordApp :: ([SiteDetails] -> App ()) -> PasswordApp
+passwordApp f = do
   e <- encryptedFilePath
   s <- decrypt e
   case parseSiteDetails s of
     Nothing -> throw "Incorrect password"
-    Just xs -> liftIO (f xs)
+    Just xs -> f xs
 
 password :: App Password
 password = App $ ask
@@ -166,8 +176,8 @@ siteDetailsParser :: Y.Value -> Y.Parser [SiteDetails]
 siteDetailsParser =
   Y.withObject "details" $ \o ->
     for (HM.toList o) $ \(sitename, details) -> do
-      details' <- Y.parseJSON details
-      return $ SiteDetails sitename (HM.lookup "password" details') (HM.lookup "siteUsername" details')
+      details' <- Y.parseJSON details :: Y.Parser (HM.HashMap T.Text T.Text)
+      return $ SiteDetails sitename (HM.lookup "password" details') (HM.lookup "username" details')
 
 -- helper functions
 
