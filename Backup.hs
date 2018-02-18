@@ -4,26 +4,25 @@
 
 module Main where
 
-import           Data.List                  (find, intercalate, init)
+import qualified Data.ByteString            as BS
+import           Data.ByteString.Char8      (pack)
+import           Data.List                  (find)
+import qualified Data.Text                  as T
+import qualified Data.Text.IO               as TIO
+import           Data.Yaml                  ((.=), (.:), (.:?))
+import qualified Data.Yaml                  as Y 
 import           Control.Exception          (bracket_)
 import           Control.Monad              (mapM_)
+import           Control.Monad.Trans.Class  (lift)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import           Control.Monad.Trans.Reader (ReaderT(..), runReaderT, ask)
-import qualified Crypto.Simple.CBC          as CBC (decrypt, encrypt)
-import qualified Data.ByteString            as BS (ByteString, readFile, writeFile)
-import           Data.ByteString.Char8      (pack)
-import qualified Data.Text                  as T (Text, pack, unpack)
-import qualified Data.Text.IO               as TIO (putStrLn)
-import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
+import qualified Crypto.Simple.CBC          as CBC
 import           System.Directory           (doesFileExist, doesDirectoryExist, getHomeDirectory)
 import           System.Environment         (getArgs)
-import           System.FilePath.Posix      ((</>))
+import           System.FilePath.Posix      ((</>), takeDirectory, isValid)
 import           System.Hclip               (setClipboard)
-import           Data.Traversable           (for)
-import           Data.Yaml                  ((.=))
-import qualified Data.Yaml                  as Y --(Value, Parser, decode, parseMaybe, withObject, parseJSON)
-import qualified Data.HashMap.Strict        as HM (HashMap, toList, lookup)
+import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
 
 type Error = String
 type EncryptedFilePath = FilePath
@@ -35,15 +34,22 @@ type User = String
 
 data SiteDetails = SiteDetails {
   name :: T.Text,
-  key :: Maybe T.Text,
-  user :: Maybe T.Text
+  user :: Maybe T.Text,
+  key :: Maybe T.Text
 } deriving (Eq, Show)
 
 instance Y.ToJSON SiteDetails where
   toJSON SiteDetails{..} = Y.object [
     "name" .= name,
-    "key"  .= key,
-    "user" .= user ]
+    "user" .= user,
+    "key" .= key ]
+
+instance Y.FromJSON SiteDetails where 
+  parseJSON = Y.withObject "details" $ \v -> do
+    name <- v .: "name"
+    user <- v .:? "user"
+    key <- v .:? "key"
+    return SiteDetails{..}
 
 newtype App a = App {
   runApp :: ReaderT Password (ExceptT Error IO) a
@@ -52,7 +58,10 @@ newtype App a = App {
 type PasswordApp = App () 
 
 main :: IO ()
-main = getArgs >>= run . parse
+main = getArgs >>= keychain
+
+keychain :: [String] -> IO ()
+keychain = run . parse
 
 parse :: [String] -> PasswordApp
 parse ["setup", e, "-p", p] = setupOrigin e p
@@ -75,15 +84,13 @@ run app = getPassword >>= runWithPassword >>= either printError finish
 setupOrigin :: EncryptedFilePath -> PasswordFilePath -> PasswordApp
 setupOrigin encryptedPath passwordPath = do
   encrypted <- encrypt passwordPath
-  write encryptedPath encrypted
+  write encrypted encryptedPath 
   c <- configPath
-  write c (pack encryptedPath)
+  write (pack encryptedPath) c
 
 -- | Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
 setupRemote :: EncryptedFilePath -> PasswordApp
-setupRemote e = passwordApp $ \_ -> do
-  c <- configPath
-  write c (pack e)
+setupRemote e = passwordApp $ \_ -> configPath >>= write (pack e)
 
 -- | Adds the key for given site to the clipboard.
 siteKey :: Site -> PasswordApp
@@ -92,21 +99,22 @@ siteKey s = passwordApp $ \xs ->
     Nothing -> liftIO $ putStrLn $ "Site " ++ s ++ " not found"
     Just k -> liftIO $ setClipboard (T.unpack k) 
 
--- | Adds the siteUser for given site to the clipboard.
+-- | Adds the username for given site to the clipboard.
 siteUser :: Site -> PasswordApp
 siteUser s = passwordApp $ \xs -> 
   case findUser s xs of
     Nothing -> liftIO $ putStrLn $ "Site " ++ s ++ " not found"
     Just u -> liftIO $ setClipboard (T.unpack u) 
 
--- | Lists name of all site details in encrypted file
+-- | Lists name of all sites in encrypted file
 list :: PasswordApp
 list = passwordApp $ liftIO . mapM_ (TIO.putStrLn . name)
 
+-- | Unencrypts encryptedfile and stores contents at given filepath
 sync :: PasswordFilePath -> PasswordApp
-sync p = passwordApp $ \xs ->
-  --assertWritable p
-  liftIO $ putStrLn $ show $ Y.toJSON xs 
+sync p = passwordApp $ \xs -> do
+  assertWritable p
+  liftIO $ Y.encodeFile p xs
 
 -- App Combinators
 
@@ -114,12 +122,9 @@ passwordApp :: ([SiteDetails] -> App ()) -> PasswordApp
 passwordApp f = do
   e <- encryptedFilePath
   s <- decrypt e
-  case parseSiteDetails s of
+  case Y.decode s of
     Nothing -> throw "Incorrect password"
     Just xs -> f xs
-
-password :: App Password
-password = App $ ask
 
 encrypt :: FilePath -> App BS.ByteString
 encrypt f = do
@@ -133,10 +138,10 @@ decrypt f = do
   p <- password
   liftIO $ BS.readFile f >>= CBC.decrypt (pack p)
 
-write :: FilePath -> BS.ByteString -> App ()
-write f c = do
+write :: BS.ByteString -> FilePath -> App ()
+write b f = do
   assertWritable f
-  liftIO $ BS.writeFile f c
+  liftIO $ BS.writeFile f b
 
 encryptedFilePath :: App FilePath
 encryptedFilePath = do
@@ -151,11 +156,14 @@ configPath = flip (</>) ".lockfile" <$> liftIO getHomeDirectory
 
 assertWritable :: FilePath -> App ()
 assertWritable path = do
-  let dir = directory path
-  exists <- liftIO $ doesDirectoryExist dir
-  if exists 
-    then return ()
-    else throw $ "Directory " ++ dir ++ " does not exist"
+  if isValid path
+    then do 
+      let dir = takeDirectory path
+      exists <- liftIO $ doesDirectoryExist dir
+      if exists 
+        then return ()
+        else throw $ "Directory " ++ dir ++ " does not exist"
+    else throw $ "Path " ++ path ++ " is not valid"
 
 assertExist :: FilePath -> App ()
 assertExist path = do
@@ -165,24 +173,12 @@ assertExist path = do
     else throw $ "File " ++ path ++ " does not exist"
 
 throw :: Error -> App a
-throw s = App $ ReaderT $ \_ -> throwE s
+throw = App . lift . throwE
 
--- Parsing
-
-parseSiteDetails :: BS.ByteString -> Maybe [SiteDetails]
-parseSiteDetails bs = Y.decode bs >>= Y.parseMaybe siteDetailsParser
-
-siteDetailsParser :: Y.Value -> Y.Parser [SiteDetails]
-siteDetailsParser =
-  Y.withObject "details" $ \o ->
-    for (HM.toList o) $ \(sitename, details) -> do
-      details' <- Y.parseJSON details :: Y.Parser (HM.HashMap T.Text T.Text)
-      return $ SiteDetails sitename (HM.lookup "password" details') (HM.lookup "username" details')
+password :: App Password
+password = App $ ask
 
 -- helper functions
-
-directory :: FilePath -> FilePath
-directory = intercalate "/" . init . split '/'
 
 getPassword :: IO Password
 getPassword = do
@@ -192,7 +188,7 @@ getPassword = do
   putChar '\n'
   return $ padR (17 - length p) '0' p
 
--- appends 0:s until 17 characters have been reached
+-- appends 0:s until n characters have been reached
 padR :: Int -> Char -> String -> String
 padR n c cs
   | n > 0 = cs ++ replicate n c
@@ -209,7 +205,7 @@ findSite :: Site -> [SiteDetails] -> Maybe SiteDetails
 findSite s xs = find ((==) (T.pack s) . name) xs
 
 findUser :: Site -> [SiteDetails] -> Maybe T.Text
-findUser s xs = user =<< findSite s xs
+findUser s xs = findSite s xs >>= user
 
 findKey :: Site -> [SiteDetails] -> Maybe T.Text
-findKey s xs = key =<< findSite s xs
+findKey s xs = findSite s xs >>= key
