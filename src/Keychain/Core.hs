@@ -1,22 +1,17 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
 
-module Keychain.Core (
-    PasswordApp, run, setupOrigin,
-    setupRemote, siteKey, siteUser,
-    list, sync
-) where
+module Keychain.Core where
 
+import           GHC.Generics               (Generic)
 import qualified Data.ByteString            as BS
 import           Data.ByteString.Char8      (pack)
 import           Data.List                  (find)
 import qualified Data.Text                  as T
-import qualified Data.Text.IO               as TIO
-import           Data.Yaml                  ((.=), (.:), (.:?))
 import qualified Data.Yaml                  as Y 
 import           Control.Exception          (bracket_)
-import           Control.Monad              (mapM_)
 import           Control.Monad.Trans.Class  (lift)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
@@ -24,7 +19,6 @@ import           Control.Monad.Trans.Reader (ReaderT(..), runReaderT, ask)
 import qualified Crypto.Simple.CBC          as CBC
 import           System.Directory           (doesFileExist, doesDirectoryExist, getHomeDirectory)
 import           System.FilePath.Posix      ((</>), takeDirectory, isValid)
-import           System.Hclip               (setClipboard)
 import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
 
 type Error = String
@@ -33,28 +27,15 @@ type PasswordFilePath = FilePath
 type Password = String
 type Site = String
 
-type Name = T.Text
-type Key = T.Text
-type User = T.Text
-
 data SiteDetails = SiteDetails {
-  name :: Name,
-  key :: Maybe Key,
-  user :: Maybe User
-} deriving (Eq, Show)
+  name :: T.Text,
+  key :: Maybe T.Text,
+  user :: Maybe T.Text
+} deriving (Eq, Show, Generic)
 
-instance Y.ToJSON SiteDetails where
-  toJSON SiteDetails{..} = Y.object [
-    "name" .= name,
-    "user" .= user,
-    "key" .= key ]
+instance Y.ToJSON SiteDetails
 
-instance Y.FromJSON SiteDetails where 
-  parseJSON = Y.withObject "details" $ \v -> do
-    name <- v .: "name"
-    user <- v .:? "user"
-    key <- v .:? "key"
-    return SiteDetails{..}
+instance Y.FromJSON SiteDetails
 
 newtype App a = App {
   runApp :: ReaderT Password (ExceptT Error IO) a
@@ -65,45 +46,6 @@ type PasswordApp = App ()
 run :: PasswordApp -> IO ()
 run app = getPassword >>= run' >>= either putStrLn return
   where run' = runExceptT . runReaderT (runApp app)
-
--- | Takes filepath to location of where to store encrypted file, existing unencrypted password file
--- and encrypts password file and stores path to encrypted file in lockfile (config).
-setupOrigin :: EncryptedFilePath -> PasswordFilePath -> PasswordApp
-setupOrigin encryptedPath passwordPath = do
-  encrypted <- encrypt passwordPath
-  write encrypted encryptedPath 
-  c <- configPath
-  write (pack encryptedPath) c
-
--- | Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
-setupRemote :: EncryptedFilePath -> PasswordApp
-setupRemote e = passwordApp $ \_ -> configPath >>= write (pack e)
-
--- | Adds the key for given site to the clipboard.
-siteKey :: Site -> PasswordApp
-siteKey s = passwordApp $ \xs -> 
-  case findKey s xs of
-    Nothing -> liftIO $ putStrLn $ "Site " ++ s ++ " not found"
-    Just k -> liftIO $ setClipboard (T.unpack k) 
-
--- | Adds the username for given site to the clipboard.
-siteUser :: Site -> PasswordApp
-siteUser s = passwordApp $ \xs -> 
-  case findUser s xs of
-    Nothing -> liftIO $ putStrLn $ "Site " ++ s ++ " not found"
-    Just u -> liftIO $ setClipboard (T.unpack u) 
-
--- | Lists name of all sites in encrypted file
-list :: PasswordApp
-list = passwordApp $ liftIO . mapM_ (TIO.putStrLn . name)
-
--- | Unencrypts encryptedfile and stores contents at given filepath
-sync :: PasswordFilePath -> PasswordApp
-sync p = passwordApp $ \xs -> do
-  assertWritable p
-  liftIO $ Y.encodeFile p xs
-
--- App Combinators
 
 passwordApp :: ([SiteDetails] -> App ()) -> PasswordApp
 passwordApp f = do
@@ -179,13 +121,6 @@ padR :: Int -> Char -> String -> String
 padR n c cs
   | n > 0 = cs ++ replicate n c
   | otherwise = cs
-
-split :: Char -> String -> [String]
-split d s =
-  case dropWhile (== d) s of
-    "" -> []
-    s' -> w : split d s''
-      where (w, s'') = break (== d) s'
 
 findSite :: Site -> [SiteDetails] -> Maybe SiteDetails
 findSite s xs = find ((==) (T.pack s) . name) xs

@@ -16,6 +16,7 @@ library
   default-language:  Haskell2010
   exposed-modules:   Keychain
                      Keychain.Core
+                     Keychain.Operations
                      Keychain.Main
 
   build-depends:     base >= 4.7 && < 5 ,

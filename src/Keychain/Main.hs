@@ -1,6 +1,7 @@
-module Keychain.Main where
+module Keychain.Main (keychain) where
 
-import           Keychain.Core              
+import           Keychain.Core              (PasswordApp, run)        
+import           Keychain.Operations              
 import           System.Environment         (getArgs)
 
 keychain :: IO ()

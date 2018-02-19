@@ -1,7 +1,3 @@
-module Keychain (
-    module Keychain.Core,
-    module Keychain.Main
-) where
+module Keychain (keychain) where
 
-import Keychain.Core
-import Keychain.Main
+import           Keychain.Main
