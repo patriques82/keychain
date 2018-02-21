@@ -7,6 +7,8 @@ import qualified Data.Text.IO               as TIO
 import qualified Data.Text                  as T
 import qualified Data.Yaml                  as Y 
 import           System.Hclip               (setClipboard)
+import           Data.List                  (find)
+import           Data.Maybe                 (fromMaybe)
 
 -- | Takes filepath to location of where to store encrypted file, existing unencrypted password file
 -- and encrypts password file and stores path to encrypted file in lockfile (config).
@@ -44,3 +46,19 @@ sync :: PasswordFilePath -> PasswordApp
 sync p = passwordApp $ \xs -> do
   assertWritable p
   liftIO $ Y.encodeFile p xs
+
+-- helper functions
+
+passwordApp :: ([SiteDetails] -> App IO ()) -> PasswordApp
+passwordApp f = do
+  xs <- fmap Y.decode $ decrypt =<< encryptedFilePath
+  fromMaybe (throw "Incorrect password") $ f <$> xs
+
+findUser :: Site -> [SiteDetails] -> Maybe T.Text
+findUser s xs = findSite s xs >>= user
+
+findKey :: Site -> [SiteDetails] -> Maybe T.Text
+findKey s xs = findSite s xs >>= key
+
+findSite :: Site -> [SiteDetails] -> Maybe SiteDetails
+findSite s xs = find ((==) (T.pack s) . name) xs
