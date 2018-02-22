@@ -20,6 +20,7 @@ library
                      Keychain.Main
 
   build-depends:     base >= 4.7 && < 5 ,
+                     bifunctors ,
                      bytestring >= 0.10 ,
                      yaml ,
                      text ,

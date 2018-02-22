@@ -2,30 +2,34 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Keychain.Core where
 
 import qualified Prelude                    as P
 import           Prelude                    hiding (writeFile, readFile)
 import           GHC.Generics               (Generic)
+import           Data.Bifunctor             (first)
 import qualified Data.ByteString            as BS
 import           Data.ByteString.Char8      (pack)
 import qualified Data.Text                  as T
 import qualified Data.Yaml                  as Y 
-import           Control.Monad.Trans.Class  (lift)
+import           Control.Exception          (Exception, SomeException, try, toException, fromException)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
-import           Control.Monad.Trans.Except (ExceptT(..), runExceptT, throwE)
+import           Control.Monad.Trans.Class  (lift)
+import           Control.Monad.Trans.Except (ExceptT(..), runExceptT)
 import           Control.Monad.Trans.Reader (ReaderT(..), runReaderT, ask)
 import qualified Crypto.Simple.CBC          as CBC
-import qualified System.Directory           as SD (doesFileExist, doesDirectoryExist, getHomeDirectory)
-import           System.FilePath.Posix      ((</>), takeDirectory, isValid)
+import qualified System.Directory           as SD (getHomeDirectory)
+import           System.FilePath.Posix      ((</>))
+import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
+import           Control.Exception          (bracket_)
 
-type Error = String
 type EncryptedFilePath = FilePath
 type PasswordFilePath = FilePath
 type Password = String
 type Site = String
+type PasswordApp = App IO ()
 
 data SiteDetails = SiteDetails {
   name :: T.Text,
@@ -38,25 +42,44 @@ instance Y.ToJSON SiteDetails
 instance Y.FromJSON SiteDetails
 
 class Monad m => IOProxy m where 
-  encryptFile :: FilePath -> Password -> App m BS.ByteString
-  decryptFile :: FilePath -> Password -> App m BS.ByteString
+  encryptFile :: FilePath -> App m BS.ByteString
+  decryptFile :: FilePath -> App m BS.ByteString
   writeFile :: FilePath -> BS.ByteString -> App m ()
   readFile :: FilePath -> App m String
   getHomeDirectory :: App m String
-  doesFileExist :: FilePath -> App m Bool
-  doesDirectoryExist :: FilePath -> App m Bool
 
 instance IOProxy IO where 
-  encryptFile f p = App $ liftIO $ BS.readFile f >>= CBC.encrypt (pack p)
-  decryptFile f p = App $ liftIO $ BS.readFile f >>= CBC.decrypt (pack p)
-  writeFile f b = App $ liftIO $ BS.writeFile f b
-  readFile f = App $ liftIO $ P.readFile f
-  getHomeDirectory = App $ liftIO SD.getHomeDirectory
-  doesDirectoryExist f = App $ liftIO $ SD.doesDirectoryExist f
-  doesFileExist f = App $ liftIO $ SD.doesFileExist f
+  encryptFile f = label EncryptionException $ \p -> try (BS.readFile f >>= CBC.encrypt (pack p))
+  decryptFile f = label DecryptionException $ \p -> try (BS.readFile f >>= CBC.decrypt (pack p))
+  writeFile f b = label WriteFileException $ const $ try (BS.writeFile f b)
+  readFile f = label ReadFileException $ const $ try (P.readFile f)
+  getHomeDirectory = label NoSuchDirectoryException $ const (try SD.getHomeDirectory)
+
+label :: AppException -> (Password -> IO (Either SomeException a)) -> App IO a 
+label e f = App $ ReaderT $ ExceptT . fmap (first (const $ toException e)) . f 
+
+data AppException
+  = EncryptionException
+  | DecryptionException
+  | WriteFileException
+  | ReadFileException
+  | NoSuchDirectoryException
+  | IncorrectConfigFormat
+  | WrongPassword
+
+instance Show AppException where
+  show EncryptionException = "Error encrypting file"
+  show DecryptionException = "Error decrypting file"
+  show WriteFileException = "Error writing to file"
+  show ReadFileException = "Error reading from file"
+  show NoSuchDirectoryException = "Error reding directory"
+  show IncorrectConfigFormat = "Incorrect format of lockfile"
+  show WrongPassword = "Wrong password, try again"
+
+instance Exception AppException
 
 newtype App m a = App {
-  runApp :: (IOProxy m) => ReaderT Password (ExceptT Error m) a
+  runApp :: (IOProxy m) => ReaderT Password (ExceptT SomeException m) a
 } deriving (Functor)
 
 instance Applicative m => Applicative (App m) where
@@ -76,28 +99,40 @@ instance Monad m => Monad (App m) where
         Left e -> return (Left e))
 
 instance MonadIO m => MonadIO (App m) where 
-  liftIO io = App $ ReaderT $ \_ -> ExceptT (fmap Right (liftIO io))
+  liftIO = App . liftIO
 
-type PasswordApp = App IO () 
+-- run 
 
--- run
+nrOfTries = 3
 
-runPasswordApp :: PasswordApp -> Password -> IO ()
-runPasswordApp app p = runExceptT (runReaderT (runApp app) p) >>= either putStrLn return
+run :: PasswordApp -> IO ()
+run app = go 0 app 
+
+go :: Int -> PasswordApp -> IO ()
+go n app = do 
+  p <- getPassword
+  e <- runExceptT (runReaderT (runApp app) p)
+  either (handleException . fromException) return e
+  where handleException :: Maybe AppException -> IO ()
+        handleException (Just WrongPassword) = 
+          if n > (nrOfTries - 1) 
+            then return () 
+            else putStrLn (show WrongPassword) >> go (n+1) app
+        handleException (Just e) = putStrLn (show e)
+        handleException Nothing = putStrLn "Unknown error"
+
+getPassword :: IO String
+getPassword = do
+  putStr "Password: "
+  hFlush stdout
+  p <- bracket_ (hSetEcho stdin False) (hSetEcho stdin True) getLine 
+  putChar '\n'
+  return $ padR (17 - length p) '0' p
+  where padR n c cs
+          | n > 0 = cs ++ replicate n c
+          | otherwise = cs
 
 -- combinators
-
-crypt :: IOProxy m => (FilePath -> Password -> App m BS.ByteString) -> FilePath -> App m BS.ByteString
-crypt f fp = assertExist fp >> password >>= f fp
-
-encrypt :: IOProxy m => FilePath -> App m BS.ByteString
-encrypt = crypt encryptFile
-
-decrypt :: IOProxy m => FilePath -> App m BS.ByteString
-decrypt = crypt decryptFile
-
-write :: IOProxy m => BS.ByteString -> FilePath -> App m ()
-write b f = assertWritable f >> writeFile f b
 
 encryptedFilePath :: IOProxy m => App m FilePath
 encryptedFilePath = do
@@ -105,31 +140,13 @@ encryptedFilePath = do
   e <- readFile c
   case lines e of
     (e':[]) -> return e'
-    _ -> throw "Config does not contain file path"
+    _ -> throwApp IncorrectConfigFormat
 
 configPath :: IOProxy m => App m FilePath
 configPath = flip (</>) ".lockfile" <$> getHomeDirectory
 
-assertWritable :: IOProxy m => FilePath -> App m ()
-assertWritable path = do
-  if isValid path
-    then do 
-      let dir = takeDirectory path
-      exists <- doesDirectoryExist dir
-      if exists 
-        then return ()
-        else throw $ "Directory " ++ dir ++ " does not exist"
-    else throw $ "Path " ++ path ++ " is not valid"
-
-assertExist :: IOProxy m => FilePath -> App m ()
-assertExist path = do
-  exists <- doesFileExist path
-  if exists
-    then return ()
-    else throw $ "File " ++ path ++ " does not exist"
-
-throw :: IOProxy m => Error -> App m a
-throw = App . lift . throwE
+throwApp :: IOProxy m => AppException -> App m a
+throwApp e = App $ lift $ ExceptT (pure (Left (toException e)))
 
 password :: IOProxy m => App m Password
 password = App $ ask
