@@ -13,6 +13,7 @@ import           Data.Bifunctor             (first)
 import qualified Data.ByteString            as BS
 import           Data.ByteString.Char8      (pack)
 import qualified Data.Text                  as T
+import qualified Data.Text.IO               as TIO
 import qualified Data.Yaml                  as Y 
 import           Control.Exception          (Exception, SomeException, try, toException, fromException)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
@@ -22,8 +23,10 @@ import           Control.Monad.Trans.Reader (ReaderT(..), runReaderT, ask)
 import qualified Crypto.Simple.CBC          as CBC
 import qualified System.Directory           as SD (getHomeDirectory)
 import           System.FilePath.Posix      ((</>))
+import           System.Hclip               (setClipboard)
 import           System.IO                  (hFlush, hSetEcho, stdout, stdin)
 import           Control.Exception          (bracket_)
+import           Data.Maybe                 (fromMaybe)
 
 type EncryptedFilePath = FilePath
 type PasswordFilePath = FilePath
@@ -41,19 +44,27 @@ instance Y.ToJSON SiteDetails
 
 instance Y.FromJSON SiteDetails
 
+-- primitives 
+
 class Monad m => IOProxy m where 
   encryptFile :: FilePath -> App m BS.ByteString
   decryptFile :: FilePath -> App m BS.ByteString
   writeFile :: FilePath -> BS.ByteString -> App m ()
   readFile :: FilePath -> App m String
   getHomeDirectory :: App m String
+  encodeFile :: Y.ToJSON a => FilePath -> [a] -> App m ()
+  printText :: T.Text -> App m ()
+  copy :: String -> App m ()
 
 instance IOProxy IO where 
-  encryptFile f = label EncryptionException $ \p -> try (BS.readFile f >>= CBC.encrypt (pack p))
-  decryptFile f = label DecryptionException $ \p -> try (BS.readFile f >>= CBC.decrypt (pack p))
-  writeFile f b = label WriteFileException $ const $ try (BS.writeFile f b)
-  readFile f = label ReadFileException $ const $ try (P.readFile f)
+  encryptFile f = label EncryptionException $ try . (>>=) (BS.readFile f) . CBC.encrypt . pack
+  decryptFile f = label DecryptionException $ try . (>>=) (BS.readFile f) . CBC.decrypt . pack
+  writeFile f = label WriteFileException . const . try . BS.writeFile f
+  readFile = label ReadFileException . const . try . P.readFile
   getHomeDirectory = label NoSuchDirectoryException $ const (try SD.getHomeDirectory)
+  encodeFile f = label EncodingException . const . try . Y.encodeFile f
+  printText = label PrintException . const . try . TIO.putStrLn
+  copy = label ClipboardException . const . try . setClipboard
 
 label :: AppException -> (Password -> IO (Either SomeException a)) -> App IO a 
 label e f = App $ ReaderT $ ExceptT . fmap (first (const $ toException e)) . f 
@@ -66,6 +77,9 @@ data AppException
   | NoSuchDirectoryException
   | IncorrectConfigFormat
   | WrongPassword
+  | ClipboardException
+  | EncodingException
+  | PrintException
 
 instance Show AppException where
   show EncryptionException = "Error encrypting file"
@@ -75,6 +89,8 @@ instance Show AppException where
   show NoSuchDirectoryException = "Error reding directory"
   show IncorrectConfigFormat = "Incorrect format of lockfile"
   show WrongPassword = "Wrong password, try again"
+  show ClipboardException = "Error copying to clipboard"
+  show PrintException = "Error printing to terminal"
 
 instance Exception AppException
 
@@ -101,8 +117,9 @@ instance Monad m => Monad (App m) where
 instance MonadIO m => MonadIO (App m) where 
   liftIO = App . liftIO
 
--- run 
+-- run { App IO () }
 
+nrOfTries :: Int
 nrOfTries = 3
 
 run :: PasswordApp -> IO ()
@@ -111,7 +128,7 @@ run app = go 0 app
 go :: Int -> PasswordApp -> IO ()
 go n app = do 
   p <- getPassword
-  e <- runExceptT (runReaderT (runApp app) p)
+  e <- runExceptT $ runReaderT (runApp app) p
   either (handleException . fromException) return e
   where handleException :: Maybe AppException -> IO ()
         handleException (Just WrongPassword) = 
@@ -134,12 +151,17 @@ getPassword = do
 
 -- combinators
 
+passwordApp :: IOProxy m => ([SiteDetails] -> App m ()) -> App m ()
+passwordApp f = do
+  xs <- fmap Y.decode $ decryptFile =<< encryptedFilePath
+  fromMaybe (throwApp WrongPassword) (f <$> xs)
+
 encryptedFilePath :: IOProxy m => App m FilePath
 encryptedFilePath = do
   c <- configPath
   e <- readFile c
   case lines e of
-    (e':[]) -> return e'
+    [fp] -> return fp
     _ -> throwApp IncorrectConfigFormat
 
 configPath :: IOProxy m => App m FilePath
