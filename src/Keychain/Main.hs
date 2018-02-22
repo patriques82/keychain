@@ -5,7 +5,7 @@ import           Keychain.Core
 import           System.Environment         (getArgs)
 
 keychain :: IO ()
-keychain = getArgs >>= runPasswordApp . parse
+keychain = getArgs >>= run . parse
 
 parse :: [String] -> PasswordApp
 parse ["setup", e, "-p", p] = setupOrigin e p
