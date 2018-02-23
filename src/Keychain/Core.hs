@@ -67,7 +67,7 @@ instance IOProxy IO where
   copy = label ClipboardException . const . try . setClipboard
 
 label :: AppException -> (Password -> IO (Either SomeException a)) -> App IO a 
-label e f = App $ ReaderT $ ExceptT . fmap (first (const $ toException e)) . f 
+label e f = App $ ReaderT $ ExceptT . fmap (first (const e)) . f 
 
 data AppException
   = EncryptionException
@@ -95,7 +95,7 @@ instance Show AppException where
 instance Exception AppException
 
 newtype App m a = App {
-  runApp :: (IOProxy m) => ReaderT Password (ExceptT SomeException m) a
+  runApp :: (IOProxy m) => ReaderT Password (ExceptT AppException m) a
 } deriving (Functor)
 
 instance Applicative m => Applicative (App m) where
@@ -129,14 +129,13 @@ go :: Int -> PasswordApp -> IO ()
 go n app = do 
   p <- getPassword
   e <- runExceptT $ runReaderT (runApp app) p
-  either (handleException . fromException) return e
-  where handleException :: Maybe AppException -> IO ()
-        handleException (Just WrongPassword) = 
+  either handleException return e
+  where handleException :: AppException -> IO ()
+        handleException WrongPassword = 
           if n > (nrOfTries - 1) 
             then return () 
             else putStrLn (show WrongPassword) >> go (n+1) app
-        handleException (Just e) = putStrLn (show e)
-        handleException Nothing = putStrLn "Unknown error"
+        handleException e = putStrLn (show e)
 
 getPassword :: IO String
 getPassword = do
@@ -154,7 +153,7 @@ getPassword = do
 passwordApp :: IOProxy m => ([SiteDetails] -> App m ()) -> App m ()
 passwordApp f = do
   xs <- fmap Y.decode $ decryptFile =<< encryptedFilePath
-  fromMaybe (throwApp WrongPassword) (f <$> xs)
+  fromMaybe (throwApp WrongPassword) $ fmap f xs
 
 encryptedFilePath :: IOProxy m => App m FilePath
 encryptedFilePath = do
@@ -168,7 +167,7 @@ configPath :: IOProxy m => App m FilePath
 configPath = flip (</>) ".lockfile" <$> getHomeDirectory
 
 throwApp :: IOProxy m => AppException -> App m a
-throwApp e = App $ lift $ ExceptT (pure (Left (toException e)))
+throwApp e = App $ lift $ ExceptT (pure (Left e))
 
 password :: IOProxy m => App m Password
 password = App $ ask
