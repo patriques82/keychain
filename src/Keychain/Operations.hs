@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Keychain.Operations where 
 
@@ -8,40 +9,39 @@ import           Data.ByteString.Char8      (pack)
 import qualified Data.Text                  as T
 import           Data.List                  (find)
 
--- |Takes filepath to location of where to store encrypted file, existing unencrypted password file
+-- |Takes filepath to existing unencrypted password file, location of where to store encrypted file
 -- and encrypts password file and stores path to encrypted file in lockfile (config).
-setupOrigin :: IOProxy m => EncryptedFilePath -> PasswordFilePath -> App m ()
-setupOrigin encryptedPath passwordPath = do
-  encrypted <- encryptFile passwordPath
-  writeFile encryptedPath encrypted
-  c <- configPath
-  writeFile c (pack encryptedPath)
+setupOrigin :: FilePath -> Config -> App ()
+setupOrigin passwords Config{..} = do
+  e <- encryptFile passwords
+  writeFile encryptedFile e
+  writeFile (configFile home) (pack encryptedFile)
 
--- |Takes filepath to location of existing encrypted file and stores path to encrypted file in lockfile (config).
-setupRemote :: IOProxy m => EncryptedFilePath -> App m ()
-setupRemote e = passwordApp $ const $ configPath >>= flip writeFile (pack e)
+-- |Takes filepath to existing encrypted file, location of where to store unencrypted password file
+-- and unencrypts encrypted file, stores passwords and path to encrypted file in lockfile (config).
+setupRemote :: FilePath -> Config -> App ()
+setupRemote passwords Config{..} = do
+  p <- decryptFile encryptedFile
+  writeFile passwords p
+  writeFile (configFile home) (pack encryptedFile)
 
 -- |Adds the key for given site to the clipboard.
-siteKey :: IOProxy m => Site -> App m ()
-siteKey s = passwordApp $ \xs -> 
+siteKey :: Site -> Config -> App ()
+siteKey s c = siteDetails c >>= \xs -> 
   case findKey s xs of
     Nothing -> printText $ T.unwords ["Site ", T.pack s, " not found"]
     Just k -> copy (T.unpack k) 
 
 -- |Adds the username for given site to the clipboard.
-siteUser :: IOProxy m => Site -> App m ()
-siteUser s = passwordApp $ \xs -> 
+siteUser :: Site -> Config -> App ()
+siteUser s c = siteDetails c >>= \xs -> 
   case findUser s xs of
     Nothing -> printText $ T.unwords ["Site ", T.pack s, " not found"]
     Just u -> copy (T.unpack u) 
 
 -- |Lists name of all sites in encrypted file
-list :: IOProxy m => App m ()
-list = passwordApp $ mapM_ (printText . name)
-
--- |Unencrypts encryptedfile and stores contents at given filepath
-sync :: IOProxy m => PasswordFilePath -> App m ()
-sync fp = passwordApp $ encodeFile fp
+list :: Config -> App ()
+list c = siteDetails c >>= mapM_ (printText . name)
 
 -- helper functions
 

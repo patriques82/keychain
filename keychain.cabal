@@ -36,3 +36,14 @@ executable keychain
   default-language:  Haskell2010
   build-depends:     base >= 4.7 && < 5 ,
                      keychain
+
+test-suite keychain-test
+  hs-source-dirs:    test
+  default-language:  Haskell2010
+  type:              exitcode-stdio-1.0
+  main-is:           Spec.hs
+  build-depends:     base >= 4.7 && < 5 ,
+                     temporary ,
+                     tasty ,
+                     tasty-hunit ,
+                     keychain
