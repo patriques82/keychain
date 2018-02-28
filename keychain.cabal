@@ -20,7 +20,6 @@ library
                      Keychain.Main
 
   build-depends:     base >= 4.7 && < 5 ,
-                     bifunctors ,
                      bytestring >= 0.10 ,
                      yaml ,
                      text ,
@@ -43,7 +42,9 @@ test-suite keychain-test
   type:              exitcode-stdio-1.0
   main-is:           Spec.hs
   build-depends:     base >= 4.7 && < 5 ,
-                     temporary ,
+                     Hclip ,
+                     filepath ,
+                     directory ,
                      tasty ,
                      tasty-hunit ,
                      keychain

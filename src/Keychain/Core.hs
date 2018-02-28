@@ -2,7 +2,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE RankNTypes #-}
 
 module Keychain.Core where
@@ -34,13 +33,13 @@ type Site = String
 
 data Config = Config {
   encryptedFile :: FilePath ,  -- ^ This is the location of the encrypted passwords
-  home :: Directory       -- ^ This is the homedirectory
-}
+  home :: Directory            -- ^ This is the homedirectory
+} deriving (Show)
 
 data SiteDetails = SiteDetails {
-  name :: T.Text,
-  key :: Maybe T.Text,
-  user :: Maybe T.Text
+  name :: T.Text ,             -- ^ The name of the site
+  key :: Maybe T.Text ,        -- ^ The password to the site 
+  user :: Maybe T.Text         -- ^ The username to the site
 } deriving (Eq, Show, Generic)
 
 instance Y.ToJSON SiteDetails
@@ -56,26 +55,7 @@ instance Exception AppException
 
 newtype App a = App {
   runApp :: ReaderT Password (ExceptT SomeException IO) a
-} deriving (Functor)
-
-instance Applicative App where
-  pure x = App (ReaderT $ \_ -> (ExceptT (pure (Right x))))
-  (App f) <*> (App x) = App $ ReaderT $ \p -> 
-    let f' = runExceptT ((runReaderT f) p)
-        x' = runExceptT ((runReaderT x) p)
-    in ExceptT $ (fmap (<*>)) f' <*> x' 
-
-instance Monad App where
-  return = pure
-  (App x) >>= f = App $ ReaderT $ \p ->
-    let mx = runExceptT ((runReaderT x) p)
-    in ExceptT $ mx >>= (\x' -> 
-      case x' of
-        Right y -> runExceptT (runReaderT (runApp (f y)) p)
-        Left e -> return (Left e))
-
-instance MonadIO App where 
-  liftIO = App . liftIO
+} deriving (Functor, Applicative, Monad, MonadIO)
 
 -- primitives 
 
@@ -92,13 +72,16 @@ readFile :: FilePath -> App String
 readFile f = App $ ReaderT $ ExceptT . const (try $ P.readFile f)
 
 encodeFile :: Y.ToJSON a => FilePath -> [a] -> App ()
-encodeFile f xs = App $ ReaderT $ ExceptT . const (try (Y.encodeFile f xs))
+encodeFile f xs = App $ ReaderT $ ExceptT . const (try $ Y.encodeFile f xs)
 
 printText :: T.Text -> App ()
 printText t = App $ ReaderT $ ExceptT . const (try $ TIO.putStrLn t)
 
 copy :: String -> App ()
-copy s = App $ ReaderT $ ExceptT . const (try (setClipboard s))
+copy s = App $ ReaderT $ ExceptT . const (try $ setClipboard s)
+
+lift2 :: IO () -> App ()
+lift2 = liftIO
 
 siteDetails :: Config -> App [SiteDetails]
 siteDetails c = do
@@ -125,7 +108,6 @@ password = App $ ask
 
 -- run
 
-nrOfTries :: Int
 nrOfTries = 3
 
 run :: App () -> IO ()
@@ -134,7 +116,7 @@ run app = go 1 app
 go :: Int -> App () -> IO ()
 go n app = do 
   p <- getPassword
-  e <- runExceptT $ runReaderT (runApp app) p
+  e <- runWithPassword app p
   either handleException return e
   where handleException :: SomeException -> IO ()
         handleException ex = 
@@ -155,3 +137,6 @@ getPassword = do
   where padR n c cs
           | n > 0 = cs ++ replicate n c
           | otherwise = cs
+
+runWithPassword :: App () -> Password -> IO (Either SomeException ())
+runWithPassword app p = runExceptT $ runReaderT (runApp app) p

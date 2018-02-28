@@ -5,7 +5,7 @@ module Keychain.Operations where
 
 import           Keychain.Core
 import           Prelude                    hiding (writeFile, readFile)
-import           Data.ByteString.Char8      (pack)
+import qualified Data.ByteString.Char8      as BC (pack, putStrLn)
 import qualified Data.Text                  as T
 import           Data.List                  (find)
 
@@ -15,7 +15,7 @@ setupOrigin :: FilePath -> Config -> App ()
 setupOrigin passwords Config{..} = do
   e <- encryptFile passwords
   writeFile encryptedFile e
-  writeFile (configFile home) (pack encryptedFile)
+  writeFile (configFile home) (BC.pack encryptedFile)
 
 -- |Takes filepath to existing encrypted file, location of where to store unencrypted password file
 -- and unencrypts encrypted file, stores passwords and path to encrypted file in lockfile (config).
@@ -23,11 +23,11 @@ setupRemote :: FilePath -> Config -> App ()
 setupRemote passwords Config{..} = do
   p <- decryptFile encryptedFile
   writeFile passwords p
-  writeFile (configFile home) (pack encryptedFile)
+  writeFile (configFile home) (BC.pack encryptedFile)
 
 -- |Adds the key for given site to the clipboard.
 siteKey :: Site -> Config -> App ()
-siteKey s c = siteDetails c >>= \xs -> 
+siteKey s c = siteDetails c >>= \xs -> do
   case findKey s xs of
     Nothing -> printText $ T.unwords ["Site ", T.pack s, " not found"]
     Just k -> copy (T.unpack k) 
