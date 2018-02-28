@@ -1,17 +1,18 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
-import           Keychain.Core              (runWithPassword, Config(..))
+import           Keychain.Core              (SiteDetails(..), Config(..), runWithPassword, siteDetails) 
 import           Keychain.Operations
-import           Control.Exception
-import           Control.Exception.Base
 import           Test.Tasty
 import           Test.Tasty.HUnit
+import           Control.Exception          (finally)
 import           System.FilePath.Posix      ((</>))
-import           System.Directory           (getHomeDirectory, getTemporaryDirectory, createDirectory, removeDirectoryRecursive, removePathForcibly) 
+import           System.Directory           (getTemporaryDirectory, createDirectory, removeDirectoryRecursive) 
 import           System.Hclip               (clearClipboard, getClipboard)
 
 password :: String
-password = "12345678901234567"
+password = "12345678901234567" -- password must be over 16 characters
 
 yaml :: String
 yaml = "- user: user89\n\
@@ -24,25 +25,56 @@ yaml = "- user: user89\n\
 main :: IO ()
 main = do
   tmp <- getTemporaryDirectory
-  let dir = tmp </> "keychain2"
+  let dir = tmp </> "keychain"
       passwords = dir </> "passwords"
       encrypted = dir </> "encrypted"
-  setup dir passwords encrypted
-  finally (defaultMain $ testGroup "Keychain tests" [siteKeyTest dir encrypted])
+      conf = Config encrypted dir
+  setup conf passwords
+  finally (defaultMain $ testGroup "Keychain tests" (tests conf))
           (removeDirectoryRecursive dir)
 
-setup :: FilePath -> FilePath -> FilePath -> IO ()
-setup dir passwords encrypted = do
-  createDirectory dir
+setup :: Config -> FilePath -> IO ()
+setup conf passwords = do
+  createDirectory (home conf)
   writeFile passwords yaml 
-  runWithPassword (setupOrigin passwords (Config encrypted dir)) password
+  runWithPassword (setupOrigin passwords conf) password
   return ()
 
-siteKeyTest :: FilePath -> FilePath -> TestTree
-siteKeyTest dir encryptedFile = testCase "Testing siteKey" $ do
-  runWithPassword (siteKey "facebook" (Config encryptedFile dir)) password
+tests :: Config -> [TestTree]
+tests conf = 
+  [ siteDetailsTest conf
+  , siteKeyTest conf
+  , siteUserTest conf
+  , setupRemoteTest conf
+  ]
+
+siteKeyTest :: Config -> TestTree
+siteKeyTest conf = testCase "siteKey" $ do
+  runWithPassword (siteKey "facebook" conf) password
   content <- getClipboard
   clearClipboard
   content @?= "test123"
 
--- full flow
+siteUserTest :: Config -> TestTree
+siteUserTest conf = testCase "siteUser" $ do
+  runWithPassword (siteUser "gmail" conf) password
+  content <- getClipboard
+  clearClipboard
+  content @?= "prettyBoy"
+
+siteDetailsTest :: Config -> TestTree
+siteDetailsTest conf = testCase "siteDetails" $ do
+  e <- runWithPassword (siteDetails conf) password
+  case e of
+    Left _ -> assertBool "Not able to parse" False
+    Right xs -> fmap name xs @?= ["facebook", "gmail"]
+
+setupRemoteTest :: Config -> TestTree
+setupRemoteTest conf = testCase "setupRemote" $ do
+  let remoteDir = home conf </> "remote"
+      passwords = remoteDir </> "passwords"
+  createDirectory remoteDir
+  runWithPassword (setupRemote passwords (conf { home = remoteDir })) password
+  rp <- readFile passwords
+  p <- readFile $ home conf </> "passwords"
+  rp @?= p

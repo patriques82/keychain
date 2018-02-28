@@ -32,7 +32,7 @@ type Password = String
 type Site = String
 
 data Config = Config {
-  encryptedFile :: FilePath ,  -- ^ This is the location of the encrypted passwords
+  encryptedFile :: FilePath ,  -- ^ This is the name of the encrypted passwords file
   home :: Directory            -- ^ This is the homedirectory
 } deriving (Show)
 
@@ -84,8 +84,8 @@ lift2 :: IO () -> App ()
 lift2 = liftIO
 
 siteDetails :: Config -> App [SiteDetails]
-siteDetails c = do
-  b <- decryptFile (encryptedFile c)
+siteDetails Config{..} = do
+  b <- decryptFile (home </> encryptedFile)
   case Y.decode b of
     Just xs -> return xs
     Nothing -> throwApp WrongPassword
@@ -138,5 +138,5 @@ getPassword = do
           | n > 0 = cs ++ replicate n c
           | otherwise = cs
 
-runWithPassword :: App () -> Password -> IO (Either SomeException ())
+runWithPassword :: App a -> Password -> IO (Either SomeException a)
 runWithPassword app p = runExceptT $ runReaderT (runApp app) p

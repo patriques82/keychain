@@ -8,22 +8,25 @@ import           Prelude                    hiding (writeFile, readFile)
 import qualified Data.ByteString.Char8      as BC (pack, putStrLn)
 import qualified Data.Text                  as T
 import           Data.List                  (find)
+import           System.FilePath.Posix      ((</>))
 
 -- |Takes filepath to existing unencrypted password file, location of where to store encrypted file
 -- and encrypts password file and stores path to encrypted file in lockfile (config).
 setupOrigin :: FilePath -> Config -> App ()
 setupOrigin passwords Config{..} = do
+  let target = home </> encryptedFile
   e <- encryptFile passwords
-  writeFile encryptedFile e
-  writeFile (configFile home) (BC.pack encryptedFile)
+  writeFile target e
+  writeFile (configFile home) (BC.pack target)
 
 -- |Takes filepath to existing encrypted file, location of where to store unencrypted password file
 -- and unencrypts encrypted file, stores passwords and path to encrypted file in lockfile (config).
 setupRemote :: FilePath -> Config -> App ()
 setupRemote passwords Config{..} = do
-  p <- decryptFile encryptedFile
+  let target = home </> encryptedFile
+  p <- decryptFile target
   writeFile passwords p
-  writeFile (configFile home) (BC.pack encryptedFile)
+  writeFile (configFile home) (BC.pack target)
 
 -- |Adds the key for given site to the clipboard.
 siteKey :: Site -> Config -> App ()
