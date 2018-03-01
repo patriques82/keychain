@@ -20,7 +20,11 @@ yaml = "- user: user89\n\
        \  name: facebook\n\
        \- user: prettyBoy\n\
        \  key: testingthapass\n\
-       \  name: gmail"
+       \  name: gmail\n\
+       \- key: secret\n\
+       \  name: shared\n\
+       \- user: 771012-3322\n\
+       \  name: personal"
 
 main :: IO ()
 main = do
@@ -30,8 +34,8 @@ main = do
       encrypted = dir </> "encrypted"
       conf = Config encrypted dir
   setup conf passwords
-  finally (defaultMain $ testGroup "Keychain tests" (tests conf))
-          (removeDirectoryRecursive dir)
+  defaultMain (testGroup "Keychain tests" (tests conf))
+    `finally` removeDirectoryRecursive dir
 
 setup :: Config -> FilePath -> IO ()
 setup conf passwords = do
@@ -44,7 +48,9 @@ tests :: Config -> [TestTree]
 tests conf = 
   [ siteDetailsTest conf
   , siteKeyTest conf
+  , siteKeyWithoutUserTest conf
   , siteUserTest conf
+  , siteUserWithoutKeyTest conf
   , setupRemoteTest conf
   ]
 
@@ -55,6 +61,13 @@ siteKeyTest conf = testCase "siteKey" $ do
   clearClipboard
   content @?= "test123"
 
+siteKeyWithoutUserTest :: Config -> TestTree
+siteKeyWithoutUserTest conf = testCase "siteKey without user" $ do
+  runWithPassword (siteKey "shared" conf) password
+  content <- getClipboard
+  clearClipboard
+  content @?= "secret"
+
 siteUserTest :: Config -> TestTree
 siteUserTest conf = testCase "siteUser" $ do
   runWithPassword (siteUser "gmail" conf) password
@@ -62,12 +75,19 @@ siteUserTest conf = testCase "siteUser" $ do
   clearClipboard
   content @?= "prettyBoy"
 
+siteUserWithoutKeyTest :: Config -> TestTree
+siteUserWithoutKeyTest conf = testCase "siteUser without key" $ do
+  runWithPassword (siteUser "personal" conf) password
+  content <- getClipboard
+  clearClipboard
+  content @?= "771012-3322"
+
 siteDetailsTest :: Config -> TestTree
 siteDetailsTest conf = testCase "siteDetails" $ do
   e <- runWithPassword (siteDetails conf) password
   case e of
     Left _ -> assertBool "Not able to parse" False
-    Right xs -> fmap name xs @?= ["facebook", "gmail"]
+    Right xs -> fmap name xs @?= ["facebook", "gmail", "shared", "personal"]
 
 setupRemoteTest :: Config -> TestTree
 setupRemoteTest conf = testCase "setupRemote" $ do
