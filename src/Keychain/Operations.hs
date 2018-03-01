@@ -1,7 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Keychain.Operations where 
+module Keychain.Operations (
+  setupOrigin, setupRemote,
+  siteKey, siteUser, list
+) where 
 
 import           Keychain.Core
 import           Prelude                    hiding (writeFile, readFile)
@@ -32,14 +35,14 @@ setupRemote passwords Config{..} = do
 siteKey :: Site -> Config -> App ()
 siteKey s c = siteDetails c >>= \xs -> do
   case findKey s xs of
-    Nothing -> printText $ T.unwords ["Site ", T.pack s, " not found"]
+    Nothing -> printText $ T.unwords ["Key for site ", T.pack s, " not found"]
     Just k -> copy (T.unpack k) 
 
 -- |Adds the username for given site to the clipboard.
 siteUser :: Site -> Config -> App ()
 siteUser s c = siteDetails c >>= \xs -> 
   case findUser s xs of
-    Nothing -> printText $ T.unwords ["Site ", T.pack s, " not found"]
+    Nothing -> printText $ T.unwords ["User for site ", T.pack s, " not found"]
     Just u -> copy (T.unpack u) 
 
 -- |Lists name of all sites in encrypted file

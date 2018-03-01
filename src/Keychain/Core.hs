@@ -32,14 +32,14 @@ type Password = String
 type Site = String
 
 data Config = Config {
-  encryptedFile :: FilePath ,  -- ^ This is the name of the encrypted passwords file
-  home :: Directory            -- ^ This is the homedirectory
+  encryptedFile :: FilePath ,
+  home :: Directory         
 } deriving (Show)
 
 data SiteDetails = SiteDetails {
-  name :: T.Text ,             -- ^ The name of the site
-  key :: Maybe T.Text ,        -- ^ The password to the site 
-  user :: Maybe T.Text         -- ^ The username to the site
+  name :: T.Text ,         
+  key :: Maybe T.Text ,    
+  user :: Maybe T.Text     
 } deriving (Eq, Show, Generic)
 
 instance Y.ToJSON SiteDetails
@@ -79,9 +79,6 @@ printText t = App $ ReaderT $ ExceptT . const (try $ TIO.putStrLn t)
 
 copy :: String -> App ()
 copy s = App $ ReaderT $ ExceptT . const (try $ setClipboard s)
-
-lift2 :: IO () -> App ()
-lift2 = liftIO
 
 siteDetails :: Config -> App [SiteDetails]
 siteDetails Config{..} = do
