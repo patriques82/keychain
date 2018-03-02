@@ -2,8 +2,11 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Keychain.Operations (
-  setupOrigin, setupRemote,
-  siteKey, siteUser, list
+  setupOrigin, 
+  setupRemote,
+  siteKey, 
+  siteUser, 
+  list
 ) where 
 
 import           Keychain.Core

@@ -28,7 +28,7 @@ library
                      Hclip ,
                      crypto-simple ,
                      transformers ,
-                     unordered-containers
+                     optparse-applicative
 
 executable keychain
   main-is:           Main.hs

@@ -34,7 +34,7 @@ type Site = String
 data Config = Config {
   encryptedFile :: FilePath ,
   home :: Directory         
-} deriving (Show)
+} deriving Show
 
 data SiteDetails = SiteDetails {
   name :: T.Text ,         
